@@ -1,5 +1,14 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, OneToMany } from 'typeorm';
-import { User } from '../../users/entities/user.entity'; // 또는 Staff 엔티티와 연결 가능
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+  UpdateDateColumn,
+  ManyToOne,
+  OneToMany,
+} from 'typeorm';
+import { User } from '../../users/entities/user.entity';
+import { Customer } from '../../customers/entities/customer.entity';
 import { SaleItem } from './sale-item.entity';
 
 @Entity()
@@ -15,12 +24,18 @@ export class Sale {
 
   @CreateDateColumn()
   createdAt!: Date;
-  
-  // 1: many
-  @ManyToOne(() => User, (user) => user.id) 
-  staff!: User;
 
-  // many : many
+  @UpdateDateColumn()
+  updatedAt!: Date;
+
+  // User 삭제 시 이력 보존 — staff 필드만 NULL로 변경
+  @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
+  staff?: User | null;
+
+  // Customer 삭제 시에도 판매 이력 보존
+  @ManyToOne(() => Customer, { onDelete: 'SET NULL', nullable: true })
+  customer?: Customer | null;
+
   @OneToMany(() => SaleItem, (saleItem) => saleItem.sale)
   items!: SaleItem[];
 }

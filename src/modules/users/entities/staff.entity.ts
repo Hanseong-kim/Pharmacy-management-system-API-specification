@@ -12,7 +12,13 @@ export class Staff {
   @Column({ nullable: true })
   phoneNumber!: string;
 
-  // 1 on 1 : user has one staff profile
-  @OneToOne(() => User, (user) => user.staff)
+  @Column({ nullable: true })
+  address!: string;
+
+  @Column({ type: 'date', nullable: true })
+  hireDate!: Date;
+
+  @OneToOne(() => User, (user) => user.staff, { onDelete: 'CASCADE' })
+  @JoinColumn()
   user!: User;
 }
