@@ -4,6 +4,9 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { MedicinesModule } from './modules/medicines/medicines.module';
 import { SalesModule } from './modules/sales/sales.module';
 import { UsersModule } from './modules/users/users.module';
+import { SuppliersModule } from './modules/suppliers/suppliers.module';
+import { CustomersModule } from './modules/customers/customers.module';
+import { PrescriptionsModule } from './modules/prescriptions/prescriptions.module';
 import { AuthModule } from './auth/auth.module';
 
 @Module({
@@ -31,6 +34,9 @@ import { AuthModule } from './auth/auth.module';
     UsersModule,
     MedicinesModule,
     SalesModule,
+    SuppliersModule,
+    CustomersModule,
+    PrescriptionsModule,
     AuthModule,
   ],
 })

@@ -1,7 +1,7 @@
-// src/auth/auth.service.ts
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { UsersService } from '../modules/users/users.service';
+import { CreateUserDto } from '../modules/users/dto/create-user.dto';
 import * as bcrypt from 'bcrypt';
 
 @Injectable()
@@ -11,29 +11,24 @@ export class AuthService {
     private jwtService: JwtService,
   ) {}
 
+  async register(createUserDto: CreateUserDto) {
+    return this.usersService.register(createUserDto);
+  }
+
   async login(email: string, pass: string) {
-    // 1. user check.
     const user = await this.usersService.findOneByEmail(email);
-    if (!user) {
-      throw new UnauthorizedException('Email or Password is incorrect.');
-    }
+    if (!user) throw new UnauthorizedException('이메일 또는 비밀번호가 올바르지 않습니다.');
 
-    // 2. Compart passwords.
     const isMatch = await bcrypt.compare(pass, user.password);
-    if (!isMatch) {
-      throw new UnauthorizedException('Email or Password is incorrect.');
-    }
+    if (!isMatch) throw new UnauthorizedException('이메일 또는 비밀번호가 올바르지 않습니다.');
 
-    // 3. 토큰에 들어갈 내용(Payload) 구성
-    const payload = { 
-      sub: user.id, 
-      email: user.email, 
+    const payload = {
+      sub: user.id,
+      email: user.email,
       role: user.role,
-      staffName: user.staff?.name // 편의상 이름도 넣어주면 좋습니다.
+      staffName: user.staff?.name,
     };
 
-    return {
-      access_token: this.jwtService.sign(payload),
-    };
+    return { access_token: this.jwtService.sign(payload) };
   }
 }

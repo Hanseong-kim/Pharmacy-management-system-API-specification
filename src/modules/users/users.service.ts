@@ -1,10 +1,10 @@
-// src/modules/users/users.service.ts
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { User } from './entities/user.entity';
 import { Staff } from './entities/staff.entity';
-import * as bcrypt from 'bcrypt'; // 설치한 bcrypt 임포트
+import { UpdateStaffDto } from './dto/update-staff.dto';
+import * as bcrypt from 'bcrypt';
 
 @Injectable()
 export class UsersService {
@@ -14,31 +14,99 @@ export class UsersService {
     private dataSource: DataSource,
   ) {}
 
+  async findAll(role?: string, page: number = 1, limit: number = 10) {
+    const [data, total] = await this.userRepository.findAndCount({
+      where: role ? { role } : {},
+      relations: ['staff'],
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        createdAt: true,
+        staff: { id: true, name: true, phoneNumber: true, address: true, hireDate: true },
+      },
+      skip: (page - 1) * limit,
+      take: limit,
+      order: { id: 'ASC' },
+    });
+
+    return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
+  }
+
   async register(userData: any) {
     return await this.dataSource.transaction(async (manager) => {
-      
       const hashedPassword = await bcrypt.hash(userData.password, 10);
-
-      const staff = manager.create(Staff, {
-        name: userData.name,
-        phoneNumber: userData.phoneNumber,
-      });
-      const savedStaff = await manager.save(Staff, staff);
 
       const user = manager.create(User, {
         email: userData.email,
         password: hashedPassword,
-        role: userData.role, // ADMIN, PHARMACIST, STAFF
-        staff: savedStaff,   // 1 on 1
+        role: userData.role,
+        staff: manager.create(Staff, {
+          name: userData.name,
+          phoneNumber: userData.phoneNumber,
+          address: userData.address,
+          hireDate: userData.hireDate,
+        }),
       });
 
       return await manager.save(User, user);
     });
   }
+
+  async remove(id: number) {
+    const user = await this.userRepository.findOne({ where: { id } });
+    if (!user) throw new NotFoundException('해당 유저를 찾을 수 없습니다.');
+    return await this.userRepository.remove(user);
+  }
+
   async findOneByEmail(email: string): Promise<User | null> {
-    return await this.userRepository.findOne({ 
+    return await this.userRepository.findOne({
       where: { email },
-      relations: ['staff'] 
+      relations: ['staff'],
     });
+  }
+
+  // ---------- Staff CRUD ----------
+
+  async findAllStaff(page: number = 1, limit: number = 10) {
+    const [data, total] = await this.staffRepository.findAndCount({
+      relations: ['user'],
+      select: {
+        id: true,
+        name: true,
+        phoneNumber: true,
+        address: true,
+        hireDate: true,
+        user: { id: true, email: true, role: true, createdAt: true },
+      },
+      skip: (page - 1) * limit,
+      take: limit,
+      order: { id: 'ASC' },
+    });
+    return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
+  }
+
+  async findOneStaff(staffId: number) {
+    const staff = await this.staffRepository.findOne({
+      where: { id: staffId },
+      relations: ['user'],
+    });
+    if (!staff) throw new NotFoundException('해당 직원을 찾을 수 없습니다.');
+    return staff;
+  }
+
+  async updateStaff(staffId: number, dto: UpdateStaffDto) {
+    const staff = await this.findOneStaff(staffId);
+    Object.assign(staff, dto);
+    return await this.staffRepository.save(staff);
+  }
+
+  async removeStaff(staffId: number) {
+    const staff = await this.staffRepository.findOne({
+      where: { id: staffId },
+      relations: ['user'],
+    });
+    if (!staff) throw new NotFoundException('해당 직원을 찾을 수 없습니다.');
+    return await this.userRepository.remove(staff.user);
   }
 }

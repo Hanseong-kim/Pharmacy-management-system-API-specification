@@ -319,3 +319,4 @@ npm run test:cov
 ---
 
 > Built with NestJS · TypeORM · PostgreSQL · JWT
+`
