@@ -14,6 +14,8 @@
 - [Core Features](#core-features)
 - [Security Design](#security-design)
 - [Transaction Flow](#transaction-flow)
+- [Data Normalization (3NF) & Referential Integrity](#data-normalization-3nf--referential-integrity)
+- [Architecture Decisions: Sale & Medicine Relationship (M:N)](#architecture-decisions-sale--medicine-relationship-mn)
 - [API Documentation](#api-documentation)
 - [Getting Started](#getting-started)
 
@@ -21,8 +23,9 @@
 
 ## Overview
 
-This project provides a single REST API covering **inventory management**, **sales processing**, and **staff permission control** for real-world pharmacy operations.  
-Beyond simple CRUD, the design proactively addresses **concurrency issues** and **privilege abuse** scenarios that can arise in production environments.
+This project provides a single REST API covering **inventory management**, **sales processing**, **supplier & customer management**, and **staff permission control** for real-world pharmacy operations.  
+The system includes seven fully implemented modules: `Auth`, `Users/Staff`, `Medicines`, `Suppliers`, `Customers`, `Prescriptions`, and `Sales`.  
+Beyond simple CRUD, the design proactively addresses **concurrency issues**, **data integrity**, and **privilege abuse** scenarios that can arise in production environments.
 
 ---
 
@@ -58,6 +61,8 @@ src/
     ├── users/              # Separate design: User (account) + Staff (employee profile)
     ├── medicines/          # Medicine inventory management (with Supplier relation)
     ├── suppliers/          # Supplier master data
+    ├── customers/          # Customer profiles (linked to Sales & Prescriptions)
+    ├── prescriptions/      # Prescription records (M:N with Medicine via @JoinTable)
     └── sales/              # Sales processing (core transaction logic)
 ```
 
@@ -75,12 +80,15 @@ erDiagram
         string email UK
         string password
         enum role "ADMIN | PHARMACIST | STAFF"
-        int staff_id FK
+        datetime createdAt
     }
     STAFF {
         int id PK
         string name
         string phoneNumber
+        string address
+        date hireDate
+        int user_id FK
     }
     MEDICINE {
         int id PK
@@ -94,27 +102,47 @@ erDiagram
     SUPPLIER {
         int id PK
         string name
+        string contactEmail
+        string phone
+    }
+    CUSTOMER {
+        int id PK
+        string name
+        string email UK
+        string phone
+        date dateOfBirth
+        datetime createdAt
     }
     SALE {
         int id PK
         decimal totalAmount
         enum status "COMPLETED | CANCELLED"
         datetime createdAt
-        int staff_id FK
+        int staff_id FK "SET NULL on User delete"
+        int customer_id FK "SET NULL on Customer delete"
     }
     SALE_ITEM {
         int id PK
         int quantity
-        decimal unitPrice
+        decimal unitPrice "snapshot at sale time"
         int sale_id FK
         int medicine_id FK
+    }
+    PRESCRIPTION {
+        int id PK
+        string status
+        datetime createdAt
+        int customer_id FK "SET NULL on Customer delete"
     }
 
     USER ||--|| STAFF : "1:1 has profile"
     SUPPLIER ||--o{ MEDICINE : "1:N supplies"
-    USER ||--o{ SALE : "1:N processes"
-    SALE ||--o{ SALE_ITEM : "1:N contains"
+    USER ||--o{ SALE : "1:N processes (SET NULL)"
+    CUSTOMER ||--o{ SALE : "1:N makes (SET NULL)"
+    SALE ||--o{ SALE_ITEM : "1:N contains (explicit junction)"
     MEDICINE ||--o{ SALE_ITEM : "1:N referenced in"
+    CUSTOMER ||--o{ PRESCRIPTION : "1:N has (SET NULL)"
+    PRESCRIPTION }o--o{ MEDICINE : "M:N includes"
 ```
 
 ### User ↔ Staff: Separating Account from Profile
@@ -134,12 +162,18 @@ This 1:1 separation design yields two concrete benefits:
 | Feature | Endpoint | Permission |
 |---|---|---|
 | Login (JWT issuance) | `POST /auth/login` | Public |
-| Register staff | `POST /users` | ADMIN |
-| Add / update / delete medicine | `POST\|PATCH\|DELETE /medicines` | ADMIN, PHARMACIST |
-| List medicines | `GET /medicines` | ALL |
-| Manage suppliers | `POST\|GET /suppliers` | ADMIN |
+| Register staff | `POST /auth/register` | Public |
+| List / get users | `GET /users`, `GET /users/:id` | ADMIN |
+| Delete user | `DELETE /users/:id` | ADMIN |
+| Staff CRUD | `GET\|PATCH\|DELETE /staff/:id` | ADMIN |
+| Add / update / delete medicine | `POST\|PATCH\|DELETE /medicines/:id` | ADMIN, PHARMACIST |
+| List / get medicine | `GET /medicines` | ALL |
+| Manage suppliers | `POST\|GET /suppliers`, `GET /suppliers/:id` | ADMIN |
+| **Manage customers** | `POST\|GET /customers`, `GET\|PATCH\|DELETE /customers/:id` | ADMIN, PHARMACIST |
+| **Manage prescriptions** | `POST\|GET /prescriptions`, `GET\|PATCH /prescriptions/:id` | ADMIN, PHARMACIST |
 | **Process sale** | `POST /sales` | PHARMACIST, STAFF |
-| View sales history | `GET /sales` | ADMIN, PHARMACIST |
+| Update sale status | `PATCH /sales/:id/status` | ADMIN, PHARMACIST |
+| View / delete sales | `GET /sales`, `GET\|DELETE /sales/:id` | ADMIN, PHARMACIST |
 
 ---
 
@@ -243,6 +277,56 @@ if the Sale record INSERT fails immediately after stock deduction, the deducted 
 
 ---
 
+## Data Normalization (3NF) & Referential Integrity
+
+### Third Normal Form (3NF) Compliance
+
+The schema is designed to eliminate both partial and transitive dependencies across all tables.
+
+**User ↔ Staff separation (removing transitive dependency)**
+
+A naive design would store authentication credentials and HR profile attributes in the same table, creating the transitive dependency: `userId → role` and `userId → staffName → staffPhone`. This schema separates them:
+
+- `User` contains only authentication-related columns: `email`, `password`, `role`.
+- `Staff` contains only HR profile columns: `name`, `phoneNumber`, `address`, `hireDate`.
+
+Each non-key attribute in both tables depends solely on its own primary key, satisfying 3NF. As a security bonus, no API that queries `Staff` can ever accidentally expose password hashes.
+
+**SaleItem price snapshot (preventing transitive dependency on live price data)**
+
+Storing only a `medicineId` FK in a sale line would create a transitive dependency: `saleItemId → medicineId → medicine.price`. If the medicine price is later updated, the historical sale total would silently change. The `unitPrice` column on `SaleItem` captures the price at the exact moment of the transaction, making it a direct, non-transitive fact about that sale line.
+
+### Referential Integrity: SET NULL Strategy
+
+For foreign keys that reference entities whose deletion must not destroy historical records, `onDelete: 'SET NULL'` is used instead of `CASCADE`:
+
+| FK Column | Parent Table | Strategy | Reason |
+|---|---|---|---|
+| `sale.staff_id` | `User` | `SET NULL` | Deleting a user account must not erase financial sale records |
+| `sale.customer_id` | `Customer` | `SET NULL` | Deleting a customer profile must not erase purchase history |
+| `prescription.customer_id` | `Customer` | `SET NULL` | Deleting a customer must not erase medical prescription records |
+
+This ensures that audit trails and financial history remain intact even after the originating entity is removed. Queries can still detect "staff was deleted" by checking `staff IS NULL`.
+
+The one exception is `Staff → User`, which uses `onDelete: 'CASCADE'` (DB-level): deleting a `User` account physically removes the linked `Staff` profile row because the profile has no independent value without the account.
+
+---
+
+## 🏗️ Architecture Decisions: Sale & Medicine Relationship (M:N)
+
+**Conceptual Relationship:** Many-to-Many (M:N)  
+**Implementation:** Explicit Junction Entity (`SaleItem`)
+
+While the conceptual relationship between a `Sale` and a `Medicine` is Many-to-Many, this system intentionally avoids using TypeORM's implicit `@ManyToMany` decorator. Instead, an explicit junction entity named `SaleItem` was implemented. Here is the technical reasoning behind this design decision:
+
+1. **Requirement for Relationship Attributes (Payload):** An implicit `@ManyToMany` table only creates linking foreign keys (`saleId` and `medicineId`). However, a real-world transaction strictly requires tracking additional attributes for that specific link, most importantly the `quantity` sold.
+2. **Historical Data Integrity (Price Snapshot):** Medicine prices fluctuate over time. If a sale only references the `Medicine` entity, updating a medicine's current price would retroactively alter the total amount of past sales. The `SaleItem` table captures and hardcodes the `unitPrice` at the exact moment of the transaction, ensuring immutable financial records.
+3. **Future Scalability:** Using an explicit junction table makes it seamless to add future per-item features, such as `discountApplied`, `dosageInstructions`, or `returnedStatus`, without breaking the existing schema.
+
+> **Note:** The `Prescription ↔ Medicine` relationship does use TypeORM's `@ManyToMany` + `@JoinTable`, because no payload attributes are needed — a prescription simply records which medicines are included, with no quantity or price snapshot required.
+
+---
+
 ## API Documentation
 
 After starting the server, all APIs can be tested directly via the Swagger UI at:
@@ -310,10 +394,13 @@ npm run test:cov
 ## Design Decisions Summary
 
 ```
-✅ Data integrity   →  DataSource.transaction processes stock deduction and sale record as a single atomic unit
-✅ Security         →  JWT RBAC + bcrypt + account enumeration defense + ValidationPipe (whitelist)
-✅ Separation       →  User (auth) / Staff (profile) split, module encapsulation
-✅ Maintainability  →  Declarative DTO validation, Swagger auto-docs, NestJS module structure
+✅ Data integrity      →  DataSource.transaction processes stock deduction and sale record as a single atomic unit
+✅ Security            →  JWT RBAC + bcrypt + account enumeration defense + ValidationPipe (whitelist)
+✅ 3NF normalization   →  User/Staff split removes transitive dependency; SaleItem.unitPrice eliminates transitive price dependency
+✅ Referential safety  →  SET NULL on sale.staff_id / sale.customer_id / prescription.customer_id preserves audit & financial history
+✅ M:N explicit join   →  SaleItem as explicit junction entity captures quantity + unitPrice snapshot (vs implicit @ManyToMany)
+✅ Separation          →  7 encapsulated modules (Auth, Users, Medicines, Suppliers, Customers, Prescriptions, Sales)
+✅ Maintainability     →  Declarative DTO validation, Swagger auto-docs, NestJS module structure
 ```
 
 ---

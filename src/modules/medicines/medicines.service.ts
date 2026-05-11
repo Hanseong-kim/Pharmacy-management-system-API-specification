@@ -94,6 +94,7 @@ export class MedicinesService {
   async remove(id: number) {
     const medicine = await this.findOne(id);
     medicine.isActive = false;
+    //await this.medicineRepository.update(id, { isActive: false }); // can optimize by directly updating without loading entity
     return await this.medicineRepository.save(medicine);
   }
 }

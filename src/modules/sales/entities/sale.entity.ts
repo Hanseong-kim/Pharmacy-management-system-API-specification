@@ -11,6 +11,14 @@ import { User } from '../../users/entities/user.entity';
 import { Customer } from '../../customers/entities/customer.entity';
 import { SaleItem } from './sale-item.entity';
 
+/**
+ * Represents a completed sales transaction (3NF compliant).
+ *
+ * `totalAmount` is stored as a persisted value (not derived at query time) to preserve
+ * the historical total even if medicine prices change later, avoiding a transitive
+ * dependency on current price data. References to `staff` and `customer` use SET NULL
+ * on deletion so that no transitive dependency on those entities can corrupt sale history.
+ */
 @Entity()
 export class Sale {
   @PrimaryGeneratedColumn()

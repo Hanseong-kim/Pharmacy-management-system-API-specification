@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, HttpException, Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { Sale } from './entities/sale.entity';
@@ -10,6 +10,8 @@ import { FindSalesQueryDto } from './dto/find-sales-query.dto';
 
 @Injectable()
 export class SalesService {
+  private readonly logger = new Logger(SalesService.name);
+
   constructor(
     @InjectRepository(Sale) private salesRepository: Repository<Sale>,
     @InjectRepository(Medicine) private medicineRepository: Repository<Medicine>,
@@ -54,84 +56,102 @@ export class SalesService {
   }
 
   async processSale(dto: CreateSaleDto, staffId: number) {
-    return await this.dataSource.transaction(async (manager) => {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+    try {
+      return await this.dataSource.transaction(async (manager) => {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
 
-      if (dto.customerId) {
-        const customer = await manager.findOne(Customer, { where: { id: dto.customerId } });
-        if (!customer) throw new BadRequestException(`고객 ID ${dto.customerId}을(를) 찾을 수 없습니다.`);
-      }
+        if (dto.customerId) {
+          const customer = await manager.findOne(Customer, { where: { id: dto.customerId } });
+          if (!customer) throw new BadRequestException(`고객 ID ${dto.customerId}을(를) 찾을 수 없습니다.`);
+        }
 
-      let total = 0;
-      const saleItemsData: { medicine: Medicine; quantity: number; unitPrice: number }[] = [];
+        let total = 0;
+        const saleItemsData: { medicine: Medicine; quantity: number; unitPrice: number }[] = [];
 
-      for (const item of dto.items) {
-        const medicine = await manager.findOne(Medicine, { where: { id: item.medicineId } });
-        if (!medicine) throw new BadRequestException(`약품 ID ${item.medicineId}을(를) 찾을 수 없습니다.`);
-        if (!medicine.isActive) throw new BadRequestException(`약품 "${medicine.name}"은(는) 비활성 상태입니다.`);
-        if (new Date(medicine.expiryDate) < today) throw new BadRequestException(`약품 "${medicine.name}"이(가) 만료되었습니다.`);
-        if (medicine.stockQty < item.quantity) throw new BadRequestException(`약품 "${medicine.name}" 재고 부족 (현재: ${medicine.stockQty})`);
+        for (const item of dto.items) {
+          const medicine = await manager.findOne(Medicine, { where: { id: item.medicineId } });
+          if (!medicine) throw new BadRequestException(`약품 ID ${item.medicineId}을(를) 찾을 수 없습니다.`);
+          if (!medicine.isActive) throw new BadRequestException(`약품 "${medicine.name}"은(는) 비활성 상태입니다.`);
+          if (new Date(medicine.expiryDate) < today) throw new BadRequestException(`약품 "${medicine.name}"이(가) 만료되었습니다.`);
+          if (medicine.stockQty < item.quantity) throw new BadRequestException(`약품 "${medicine.name}" 재고 부족 (현재: ${medicine.stockQty})`);
 
-        medicine.stockQty -= item.quantity;
-        await manager.save(medicine);
+          medicine.stockQty -= item.quantity;
+          await manager.save(medicine);
 
-        const unitPrice = Number(medicine.price);
-        total += unitPrice * item.quantity;
-        saleItemsData.push({ medicine, quantity: item.quantity, unitPrice });
-      }
+          const unitPrice = Number(medicine.price);
+          total += unitPrice * item.quantity;
+          saleItemsData.push({ medicine, quantity: item.quantity, unitPrice });
+        }
 
-      const sale = manager.create(Sale, {
-        totalAmount: total,
-        staff: { id: staffId } as any,
-        customer: dto.customerId ? ({ id: dto.customerId } as any) : undefined,
-        status: 'COMPLETED',
-      });
-      const savedSale = await manager.save(sale);
-
-      for (const si of saleItemsData) {
-        const saleItem = manager.create(SaleItem, {
-          sale: savedSale,
-          medicine: si.medicine,
-          quantity: si.quantity,
-          unitPrice: si.unitPrice,
+        const sale = manager.create(Sale, {
+          totalAmount: total,
+          staff: { id: staffId } as any,
+          customer: dto.customerId ? ({ id: dto.customerId } as any) : undefined,
+          status: 'COMPLETED',
         });
-        await manager.save(saleItem);
-      }
+        const savedSale = await manager.save(sale);
 
-      return savedSale;
-    });
+        for (const si of saleItemsData) {
+          const saleItem = manager.create(SaleItem, {
+            sale: savedSale,
+            medicine: si.medicine,
+            quantity: si.quantity,
+            unitPrice: si.unitPrice,
+          });
+          await manager.save(saleItem);
+        }
+
+        return savedSale;
+      });
+    } catch (error) {
+      this.logger.error('processSale failed', error);
+      if (error instanceof HttpException) throw error;
+      throw new InternalServerErrorException('판매 처리 중 오류가 발생했습니다.');
+    }
   }
 
   async updateStatus(id: number, status: string) {
-    const sale = await this.findOne(id);
-    if (sale.status === 'CANCELLED') throw new BadRequestException('이미 취소된 판매입니다.');
+    try {
+      const sale = await this.findOne(id);
+      if (sale.status === 'CANCELLED') throw new BadRequestException('이미 취소된 판매입니다.');
 
-    if (status === 'CANCELLED') {
-      await this.dataSource.transaction(async (manager) => {
-        for (const item of sale.items) {
-          await manager.increment(Medicine, { id: item.medicine.id }, 'stockQty', item.quantity);
-        }
-        await manager.update(Sale, id, { status: 'CANCELLED' });
-      });
-      return this.findOne(id);
+      if (status === 'CANCELLED') {
+        await this.dataSource.transaction(async (manager) => {
+          for (const item of sale.items) {
+            await manager.increment(Medicine, { id: item.medicine.id }, 'stockQty', item.quantity);
+          }
+          await manager.update(Sale, id, { status: 'CANCELLED' });
+        });
+        return this.findOne(id);
+      }
+
+      sale.status = status;
+      return await this.salesRepository.save(sale);
+    } catch (error) {
+      this.logger.error(`updateStatus failed for sale ${id}`, error);
+      if (error instanceof HttpException) throw error;
+      throw new InternalServerErrorException('판매 상태 변경 중 오류가 발생했습니다.');
     }
-
-    sale.status = status;
-    return await this.salesRepository.save(sale);
   }
 
   async remove(id: number) {
-    const sale = await this.findOne(id);
+    try {
+      const sale = await this.findOne(id);
 
-    if (sale.status !== 'CANCELLED') {
-      await this.dataSource.transaction(async (manager) => {
-        for (const item of sale.items) {
-          await manager.increment(Medicine, { id: item.medicine.id }, 'stockQty', item.quantity);
-        }
-      });
+      if (sale.status !== 'CANCELLED') {
+        await this.dataSource.transaction(async (manager) => {
+          for (const item of sale.items) {
+            await manager.increment(Medicine, { id: item.medicine.id }, 'stockQty', item.quantity);
+          }
+        });
+      }
+
+      return await this.salesRepository.remove(sale);
+    } catch (error) {
+      this.logger.error(`remove failed for sale ${id}`, error);
+      if (error instanceof HttpException) throw error;
+      throw new InternalServerErrorException('판매 삭제 중 오류가 발생했습니다.');
     }
-
-    return await this.salesRepository.remove(sale);
   }
 }

@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { HttpException, Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { User } from './entities/user.entity';
@@ -8,6 +8,8 @@ import * as bcrypt from 'bcrypt';
 
 @Injectable()
 export class UsersService {
+  private readonly logger = new Logger(UsersService.name);
+
   constructor(
     @InjectRepository(User) private userRepository: Repository<User>,
     @InjectRepository(Staff) private staffRepository: Repository<Staff>,
@@ -34,23 +36,29 @@ export class UsersService {
   }
 
   async register(userData: any) {
-    return await this.dataSource.transaction(async (manager) => {
-      const hashedPassword = await bcrypt.hash(userData.password, 10);
+    try {
+      return await this.dataSource.transaction(async (manager) => {
+        const hashedPassword = await bcrypt.hash(userData.password, 10);
 
-      const user = manager.create(User, {
-        email: userData.email,
-        password: hashedPassword,
-        role: userData.role,
-        staff: manager.create(Staff, {
-          name: userData.name,
-          phoneNumber: userData.phoneNumber,
-          address: userData.address,
-          hireDate: userData.hireDate,
-        }),
+        const user = manager.create(User, {
+          email: userData.email,
+          password: hashedPassword,
+          role: userData.role,
+          staff: manager.create(Staff, {
+            name: userData.name,
+            phoneNumber: userData.phoneNumber,
+            address: userData.address,
+            hireDate: userData.hireDate,
+          }),
+        });
+
+        return await manager.save(User, user);
       });
-
-      return await manager.save(User, user);
-    });
+    } catch (error) {
+      this.logger.error('register failed', error);
+      if (error instanceof HttpException) throw error;
+      throw new InternalServerErrorException('회원가입 처리 중 오류가 발생했습니다.');
+    }
   }
 
   async remove(id: number) {
